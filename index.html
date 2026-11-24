@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Escáner de códigos</title>
+<style>
+:root{--bg:#f5f6f8;--fg:#1d2330;--card:#fff;--accent:#2563eb;--muted:#6b7280;--ok:#15803d;--err:#b91c1c;--line:#cbd2dc}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0f1218;--fg:#e8ebf1;--card:#1a1f2a;--accent:#60a5fa;--muted:#9aa3b2;--ok:#4ade80;--err:#f87171;--line:#2e3646}}
+:root[data-theme="dark"]{--bg:#0f1218;--fg:#e8ebf1;--card:#1a1f2a;--accent:#60a5fa;--muted:#9aa3b2;--ok:#4ade80;--err:#f87171;--line:#2e3646}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 12px}
+.card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+video{width:100%;border-radius:10px;background:#000;aspect-ratio:4/3;object-fit:cover;display:block}
+label{display:block;font-size:14px;color:var(--muted);margin:10px 0 4px}
+input,textarea{width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+textarea{min-height:64px;resize:vertical}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+.seg{display:flex;gap:8px}
+.seg label{flex:1;margin:0;position:relative}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg span{display:block;text-align:center;padding:10px;border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer}
+.seg input:checked + span{background:var(--accent);border-color:var(--accent);color:#fff}
+button{width:100%;font:inherit;font-weight:600;padding:14px;border:0;border-radius:10px;background:var(--accent);color:#fff;margin-top:12px;cursor:pointer}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.5}
+#msg{margin-top:10px;font-size:15px;min-height:20px}
+#msg.ok{color:var(--ok)}
+#msg.err{color:var(--err)}
+.hint{font-size:13px;color:var(--muted);margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Escáner de códigos</h1>
+
+  <div class="card">
+    <video id="cam" playsinline muted autoplay></video>
+    <div class="row" style="margin-top:10px">
+      <button id="startBtn" class="sec" type="button">Iniciar cámara</button>
+      <button id="stopBtn" class="sec" type="button">Detener</button>
+    </div>
+    <div class="hint">Apunta al código EAN-13 o Code 128. Se llena solo al leerlo; también puedes escribirlo a mano.</div>
+  </div>
+
+  <form id="f" class="card" autocomplete="off">
+    <label>Tipo</label>
+    <div class="seg">
+      <label><input type="radio" name="tipo" value="Bodega" checked><span>Bodega</span></label>
+      <label><input type="radio" name="tipo" value="Medidor"><span>Medidor</span></label>
+    </div>
+
+    <label for="codigo">Código</label>
+    <input id="codigo" required inputmode="numeric">
+
+    <label for="formato">Formato</label>
+    <input id="formato" readonly placeholder="Se detecta al escanear">
+
+    <label id="cantLbl" for="cantidad">Cantidad</label>
+    <input id="cantidad" type="number" min="0" step="any" value="1" required inputmode="decimal">
+
+    <label for="usuario">Usuario</label>
+    <input id="usuario" required>
+
+    <label for="notas">Notas</label>
+    <textarea id="notas"></textarea>
+
+    <button id="save" type="submit">Guardar</button>
+    <div id="msg" role="status"></div>
+  </form>
+</main>
+
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+  // ---- Configuración ----
+  const URL_EXEC = 'https://script.google.com/macros/s/AKfycbwnTFP-vgddYEEbRbPpe9rrUUGbQN9Uwfl3df3KdD31IQo5z8s627jj2KFia92a6iRntw/exec';
+  const TOKEN = 'Xk7mQ2vR9pL4wT8zN1cY5bH3';
+  const HOJA = 'Escaneos';
+
+  const $ = id => document.getElementById(id);
+  const FORMATS = { EAN_13: 'EAN-13', CODE_128: 'Code 128' };
+  let reader = null;
+
+  function setMsg(text, kind) {
+    const m = $('msg');
+    m.textContent = text;
+    m.className = kind || '';
+  }
+
+  function onRead(text, fmt) {
+    if ($('codigo').value === text && $('formato').value === (FORMATS[fmt] || fmt)) return;
+    $('codigo').value = text;
+    $('formato').value = FORMATS[fmt] || fmt;
+    if (navigator.vibrate) navigator.vibrate(80);
+  }
+
+  async function startCam() {
+    if (!window.ZXing) { setMsg('No se cargó la librería de escaneo. Revisa la conexión.', 'err'); return; }
+    stopCam();
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+    reader = new ZXing.BrowserMultiFormatReader(hints, 300);
+    try {
+      await reader.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        $('cam'),
+        (res) => { if (res) onRead(res.getText(), ZXing.BarcodeFormat[res.getBarcodeFormat()]); }
+      );
+    } catch (e) {
+      setMsg('No se pudo abrir la cámara: ' + e.message, 'err');
+      reader = null;
+    }
+  }
+
+  function stopCam() {
+    if (reader) { try { reader.reset(); } catch (e) {} reader = null; }
+  }
+
+  $('startBtn').addEventListener('click', startCam);
+  $('stopBtn').addEventListener('click', stopCam);
+  window.addEventListener('pagehide', stopCam);
+
+  document.querySelectorAll('input[name=tipo]').forEach(r => r.addEventListener('change', () => {
+    $('cantLbl').textContent = document.querySelector('input[name=tipo]:checked').value === 'Medidor' ? 'Lectura' : 'Cantidad';
+  }));
+
+  try {
+    $('usuario').value = localStorage.getItem('usuario') || '';
+    $('usuario').addEventListener('input', () => localStorage.setItem('usuario', $('usuario').value));
+  } catch (e) {}
+
+  $('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('save');
+    btn.disabled = true;
+    setMsg('Guardando…');
+    const payload = {
+      token: TOKEN,
+      hoja: HOJA,
+      fecha: new Date().toISOString(),
+      tipo: document.querySelector('input[name=tipo]:checked').value,
+      codigo: $('codigo').value.trim(),
+      formato: $('formato').value,
+      cantidad: $('cantidad').value,
+      usuario: $('usuario').value.trim(),
+      notas: $('notas').value.trim()
+    };
+    try {
+      const r = await fetch(URL_EXEC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      const j = await r.json();
+      if (j.ok) {
+        setMsg('Guardado ✔', 'ok');
+        $('codigo').value = '';
+        $('formato').value = '';
+        $('cantidad').value = '1';
+        $('notas').value = '';
+      } else {
+        setMsg('Error: ' + (j.error || 'desconocido'), 'err');
+      }
+    } catch (err) {
+      setMsg('No se pudo enviar. Revisa la conexión.', 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
